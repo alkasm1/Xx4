@@ -78,6 +78,9 @@ audio {
   margin-top: 8px;
   background: #020617;
 }
+input[type="file"] {
+  font-size: 11px;
+}
 </style>
 
 <!-- مكتبات خارجية -->
@@ -98,7 +101,13 @@ audio {
       <button id="recordBtn" onclick="toggleRecording()">بدء التسجيل</button>
       <span id="recordStatus" class="status">غير مسجل</span>
     </div>
+
+    <div class="row" style="margin-top:6px;">
+      <input type="file" id="audioFile" accept="audio/*" onchange="loadAudioFile()">
+    </div>
+
     <audio id="localAudio" controls></audio>
+
     <div class="row" style="margin-top:6px;">
       <button class="secondary" onclick="generateAudioQR()">تحويل الصوت إلى QR</button>
     </div>
@@ -109,9 +118,14 @@ audio {
   <div class="box">
     <div class="section-title">استقبال صوت من QR</div>
     <div class="row">
-      <button onclick="startScan()">بدء المسح</button>
+      <button onclick="startScan()">بدء المسح بالكاميرا</button>
       <button class="danger" onclick="stopScan()">إيقاف المسح</button>
     </div>
+
+    <div class="row" style="margin-top:6px;">
+      <input type="file" accept="image/*" id="qrImageInput" onchange="decodeQRFromImage()">
+    </div>
+
     <div id="reader"></div>
     <audio id="receivedAudio" controls></audio>
     <div id="scanStatus" class="status"></div>
@@ -131,12 +145,11 @@ const localAudio = document.getElementById("localAudio");
 
 async function toggleRecording() {
   if (!mediaRecorder || mediaRecorder.state === "inactive") {
-    // بدء التسجيل
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       recordedChunks = [];
       mediaRecorder = new MediaRecorder(stream, {
-        mimeType: "audio/webm" // بسيط ومتاح في المتصفحات الحديثة
+        mimeType: "audio/webm"
       });
 
       mediaRecorder.ondataavailable = e => {
@@ -152,34 +165,32 @@ async function toggleRecording() {
 
       mediaRecorder.start();
       recordBtn.textContent = "إيقاف التسجيل";
-      recordStatus.textContent = "جاري التسجيل...";
+      recordStatus.textContent = "جاري التسجيل... (حاول ألا تتجاوز 1–2 ثانية)";
     } catch (err) {
       console.error(err);
       recordStatus.textContent = "فشل في الوصول للميكروفون";
     }
   } else if (mediaRecorder.state === "recording") {
-    // إيقاف التسجيل
     mediaRecorder.stop();
     recordBtn.textContent = "بدء التسجيل";
     recordStatus.textContent = "إيقاف التسجيل...";
   }
 }
 
-/* ========= 2) تحويل Blob صوت إلى نص مضغوط ========= */
+/* ========= 2) تحميل ملف صوتي من المعرض ========= */
 
-// Blob → Uint8Array
-function blobToUint8Array(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = e => {
-      resolve(new Uint8Array(e.target.result));
-    };
-    reader.onerror = reject;
-    reader.readAsArrayBuffer(blob);
-  });
+function loadAudioFile() {
+  const file = document.getElementById("audioFile").files[0];
+  if (!file) return;
+
+  recordedBlob = file;
+  const url = URL.createObjectURL(file);
+  localAudio.src = url;
+  recordStatus.textContent = "تم تحميل ملف صوتي — جاهز للتحويل إلى QR (يفضل أن يكون قصيرًا)";
 }
 
-// Uint8Array → Base64
+/* ========= 3) أدوات تحويل بايتات ↔ Base64 ========= */
+
 function uint8ToBase64(u8) {
   let binary = "";
   for (let i = 0; i < u8.length; i++) {
@@ -188,7 +199,6 @@ function uint8ToBase64(u8) {
   return btoa(binary);
 }
 
-// Base64 → Uint8Array
 function base64ToUint8(base64) {
   const binary = atob(base64);
   const len = binary.length;
@@ -199,18 +209,48 @@ function base64ToUint8(base64) {
   return u8;
 }
 
-/* ========= 3) توليد QR من الصوت ========= */
+/* ========= 4) تحويل الصوت إلى PCM 8-bit 8kHz ========= */
+
+async function convertToPCM(blob) {
+  const arrayBuffer = await blob.arrayBuffer();
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+    sampleRate: 8000
+  });
+
+  const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+  const raw = audioBuffer.getChannelData(0); // mono
+  const length = Math.min(raw.length, 8000 * 2); // حد أقصى ~2 ثانية
+  const pcm8 = new Uint8Array(length);
+
+  for (let i = 0; i < length; i++) {
+    let sample = raw[i];
+    if (sample > 1) sample = 1;
+    if (sample < -1) sample = -1;
+    pcm8[i] = Math.round((sample * 127) + 128); // 8-bit PCM
+  }
+
+  return pcm8;
+}
+
+/* ========= 5) توليد QR من الصوت ========= */
 
 function generateAudioQR() {
   if (!recordedBlob) {
-    recordStatus.textContent = "لا يوجد تسجيل بعد.";
+    recordStatus.textContent = "لا يوجد تسجيل أو ملف صوتي بعد.";
     return;
   }
 
-  blobToUint8Array(recordedBlob).then(u8 => {
-    const b64 = uint8ToBase64(u8);
+  convertToPCM(recordedBlob).then(pcm => {
+    const b64 = uint8ToBase64(pcm);
     const compressed = LZString.compressToEncodedURIComponent(b64);
     const finalText = "ALM-AUDIO/1.0;" + compressed;
+
+    // تحذير بسيط إذا كان النص كبيرًا
+    if (finalText.length > 2000) {
+      recordStatus.textContent = "الصوت طويل أو كبير جدًا على QR — حاول تقصيره.";
+      return;
+    }
 
     document.getElementById("qrcode").innerHTML = "";
     new QRCode(document.getElementById("qrcode"), {
@@ -227,7 +267,7 @@ function generateAudioQR() {
   });
 }
 
-/* ========= 4) مسح QR واستعادة الصوت ========= */
+/* ========= 6) مسح QR بالكاميرا ========= */
 
 let html5QrInstance = null;
 const readerDiv = document.getElementById("reader");
@@ -269,6 +309,38 @@ function stopScan() {
   });
 }
 
+/* ========= 7) فك QR من صورة من المعرض ========= */
+
+function decodeQRFromImage() {
+  const file = document.getElementById("qrImageInput").files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const img = new Image();
+    img.onload = function() {
+      const html5Qr = new Html5Qrcode("reader");
+      readerDiv.style.display = "block";
+      html5Qr.scanFile(img, false)
+        .then(qrText => {
+          handleScannedText(qrText);
+          html5Qr.clear();
+          readerDiv.style.display = "none";
+        })
+        .catch(err => {
+          console.error(err);
+          scanStatus.textContent = "فشل في قراءة QR من الصورة.";
+          html5Qr.clear();
+          readerDiv.style.display = "none";
+        });
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+/* ========= 8) معالجة النص الممسوح (كاميرا أو صورة) ========= */
+
 function handleScannedText(qrText) {
   if (!qrText.startsWith("ALM-AUDIO/1.0;")) {
     scanStatus.textContent = "البيانات ليست من نوع ALM-AUDIO/1.0";
@@ -281,11 +353,58 @@ function handleScannedText(qrText) {
     return;
   }
 
-  const u8 = base64ToUint8(b64);
-  const blob = new Blob([u8], { type: "audio/webm" });
-  const url = URL.createObjectURL(blob);
+  const pcm8 = base64ToUint8(b64);
+
+  // تحويل PCM 8-bit 8kHz إلى WAV بسيط للتشغيل
+  const wavBlob = pcm8ToWavBlob(pcm8, 8000);
+  const url = URL.createObjectURL(wavBlob);
   receivedAudio.src = url;
   scanStatus.textContent = "تم استعادة الصوت — يمكنك تشغيله الآن.";
+}
+
+/* ========= 9) تحويل PCM 8-bit إلى WAV Blob ========= */
+
+function pcm8ToWavBlob(pcm8, sampleRate) {
+  const numChannels = 1;
+  const bytesPerSample = 1;
+  const blockAlign = numChannels * bytesPerSample;
+  const byteRate = sampleRate * blockAlign;
+  const dataSize = pcm8.length * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  // RIFF header
+  writeString(view, 0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(view, 8, "WAVE");
+
+  // fmt chunk
+  writeString(view, 12, "fmt ");
+  view.setUint32(16, 16, true);      // Subchunk1Size
+  view.setUint16(20, 1, true);       // AudioFormat = PCM
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 8 * bytesPerSample, true); // BitsPerSample
+
+  // data chunk
+  writeString(view, 36, "data");
+  view.setUint32(40, dataSize, true);
+
+  // PCM data
+  let offset = 44;
+  for (let i = 0; i < pcm8.length; i++) {
+    view.setUint8(offset++, pcm8[i]);
+  }
+
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
+function writeString(view, offset, str) {
+  for (let i = 0; i < str.length; i++) {
+    view.setUint8(offset + i, str.charCodeAt(i));
+  }
 }
 </script>
 
