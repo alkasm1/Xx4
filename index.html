@@ -141,6 +141,8 @@ input[type="file"] {
 let recordedBlob = null;
 const recordStatus = document.getElementById("recordStatus");
 const localAudio = document.getElementById("localAudio");
+const receivedAudio = document.getElementById("receivedAudio");
+const scanStatus = document.getElementById("scanStatus");
 
 /* تسجيل 1 ثانية ثابتة */
 async function recordOneSecond() {
@@ -203,7 +205,6 @@ function speedUpBuffer(buffer, factor = 10) {
 /* تحويل AudioBuffer إلى PCM 8-bit 8kHz */
 async function bufferToPCM8(buffer) {
   const targetRate = 8000;
-  const ctx = new AudioContext({ sampleRate: targetRate });
   const offline = new OfflineAudioContext(1, buffer.duration * targetRate, targetRate);
   const src = offline.createBufferSource();
   src.buffer = buffer;
@@ -222,33 +223,72 @@ async function bufferToPCM8(buffer) {
   return pcm8;
 }
 
-/* تحويل PCM8 إلى AudioBuffer مع إبطاء ×factor */
-async function pcm8ToSlowBuffer(pcm8, sampleRate = 8000, factor = 10) {
+/* AudioBuffer → WAV Blob (16-bit PCM) */
+function audioBufferToWavBlob(buffer) {
+  const numChannels = buffer.numberOfChannels;
+  const sampleRate = buffer.sampleRate;
+  const format = 1; // PCM
+  const bitDepth = 16;
+
+  const samples = buffer.getChannelData(0);
+  const blockAlign = numChannels * bitDepth / 8;
+  const byteRate = sampleRate * blockAlign;
+  const dataSize = samples.length * 2;
+
+  const bufferSize = 44 + dataSize;
+  const arrayBuffer = new ArrayBuffer(bufferSize);
+  const view = new DataView(arrayBuffer);
+
+  let offset = 0;
+
+  function writeString(str) {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset++, str.charCodeAt(i));
+    }
+  }
+
+  writeString("RIFF");
+  view.setUint32(offset, 36 + dataSize, true); offset += 4;
+  writeString("WAVE");
+  writeString("fmt ");
+  view.setUint32(offset, 16, true); offset += 4;
+  view.setUint16(offset, format, true); offset += 2;
+  view.setUint16(offset, numChannels, true); offset += 2;
+  view.setUint32(offset, sampleRate, true); offset += 4;
+  view.setUint32(offset, byteRate, true); offset += 4;
+  view.setUint16(offset, blockAlign, true); offset += 2;
+  view.setUint16(offset, bitDepth, true); offset += 2;
+  writeString("data");
+  view.setUint32(offset, dataSize, true); offset += 4;
+
+  for (let i = 0; i < samples.length; i++) {
+    let s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s * 0x7fff, true);
+    offset += 2;
+  }
+
+  return new Blob([arrayBuffer], { type: "audio/wav" });
+}
+
+/* تحويل PCM8 إلى AudioBuffer مع إبطاء ×factor ثم تشغيله كـ WAV */
+async function playRestoredPCM(pcm8) {
+  const factor = 10;
+  const sampleRate = 8000;
   const ctx = new AudioContext();
   const length = pcm8.length * factor;
   const buffer = ctx.createBuffer(1, length, sampleRate);
   const out = buffer.getChannelData(0);
+
   for (let i = 0; i < pcm8.length; i++) {
     const sample = (pcm8[i] - 128) / 127;
     for (let j = 0; j < factor; j++) {
       out[i * factor + j] = sample;
     }
   }
-  return buffer;
-}
 
-/* تشغيل AudioBuffer */
-function playBuffer(buffer, audioElement) {
-  const ctx = new AudioContext();
-  const src = ctx.createBufferSource();
-  src.buffer = buffer;
-  const dest = ctx.createMediaStreamDestination();
-  src.connect(dest);
-  src.connect(ctx.destination);
-  src.start();
-
-  const stream = dest.stream;
-  audioElement.srcObject = stream;
+  const wavBlob = audioBufferToWavBlob(buffer);
+  const url = URL.createObjectURL(wavBlob);
+  receivedAudio.src = url;
 }
 
 /* توليد QR */
@@ -292,6 +332,7 @@ async function generateAudioQR() {
 
     recordStatus.textContent = "تم توليد QR.";
   } catch (e) {
+    console.error(e);
     recordStatus.textContent = "خطأ أثناء معالجة الصوت.";
   }
 }
@@ -323,8 +364,6 @@ function shareQR() {
 /* مسح QR بالكاميرا */
 let html5QrInstance = null;
 const readerDiv = document.getElementById("reader");
-const receivedAudio = document.getElementById("receivedAudio");
-const scanStatus = document.getElementById("scanStatus");
 
 function startScan() {
   if (html5QrInstance) return;
@@ -394,8 +433,7 @@ async function handleScannedText(qrText) {
     return;
   }
   const pcm8 = base64ToUint8(b64);
-  const buffer = await pcm8ToSlowBuffer(pcm8, 8000, 10);
-  playBuffer(buffer, receivedAudio);
+  await playRestoredPCM(pcm8);
   scanStatus.textContent = "تم استعادة الصوت (مع إبطاء ×10).";
 }
 </script>
