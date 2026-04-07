@@ -396,28 +396,25 @@ function stopScan() {
 /* فك QR من صورة */
 function decodeQRFromImage() {
   const file = document.getElementById("qrImageInput").files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = e => {
-    const img = new Image();
-    img.onload = () => {
-      const html5Qr = new Html5Qrcode("reader");
-      readerDiv.style.display = "block";
-      html5Qr.scanFile(img, false)
-        .then(qrText => {
-          handleScannedText(qrText);
-          html5Qr.clear();
-          readerDiv.style.display = "none";
-        })
-        .catch(() => {
-          scanStatus.textContent = "فشل قراءة QR من الصورة.";
-          html5Qr.clear();
-          readerDiv.style.display = "none";
-        });
-    };
-    img.src = e.target.result;
-  };
-  reader.readAsDataURL(file);
+  if (!file) {
+    scanStatus.textContent = "لم يتم اختيار صورة.";
+    return;
+  }
+
+  const html5Qr = new Html5Qrcode("reader");
+  document.getElementById("reader").style.display = "block";
+
+  html5Qr.scanFile(file, true)
+    .then(qrText => {
+      handleScannedText(qrText);
+      html5Qr.clear();
+      document.getElementById("reader").style.display = "none";
+    })
+    .catch(err => {
+      scanStatus.textContent = "فشل قراءة QR من الصورة.";
+      html5Qr.clear();
+      document.getElementById("reader").style.display = "none";
+    });
 }
 
 /* معالجة النص الممسوح */
