@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>ALM-AUDIO — صوت عبر QR</title>
+<style>
+body {
+  margin: 0;
+  font-family: "Cairo", sans-serif;
+  background: #020617;
+  color: #e5e7eb;
+}
+.app {
+  max-width: 480px;
+  margin: 0 auto;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+}
+h1 {
+  font-size: 18px;
+  margin: 0 0 4px;
+}
+.sub {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-bottom: 12px;
+}
+.section-title {
+  font-size: 13px;
+  margin: 10px 0 4px;
+  color: #93c5fd;
+}
+button {
+  border-radius: 8px;
+  border: none;
+  padding: 8px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  background: #2563eb;
+  color: white;
+  margin-right: 4px;
+}
+button.secondary {
+  background: #4b5563;
+}
+button.danger {
+  background: #b91c1c;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+#qrcode {
+  margin-top: 8px;
+  text-align: center;
+}
+#reader {
+  margin-top: 8px;
+  display: none;
+}
+audio {
+  width: 100%;
+  margin-top: 8px;
+}
+.status {
+  font-size: 11px;
+  color: #a5b4fc;
+  margin-top: 4px;
+}
+.box {
+  border: 1px solid #1f2937;
+  border-radius: 10px;
+  padding: 8px;
+  margin-top: 8px;
+  background: #020617;
+}
+</style>
+
+<!-- مكتبات خارجية -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://unpkg.com/html5-qrcode"></script>
+</head>
+<body>
+
+<div class="app">
+  <h1>ALM-AUDIO/1.0</h1>
+  <div class="sub">نقل مقطع صوتي قصير عبر QR فقط — بدون إنترنت.</div>
+
+  <!-- قسم الإرسال -->
+  <div class="box">
+    <div class="section-title">إرسال صوت عبر QR</div>
+    <div class="row">
+      <button id="recordBtn" onclick="toggleRecording()">بدء التسجيل</button>
+      <span id="recordStatus" class="status">غير مسجل</span>
+    </div>
+    <audio id="localAudio" controls></audio>
+    <div class="row" style="margin-top:6px;">
+      <button class="secondary" onclick="generateAudioQR()">تحويل الصوت إلى QR</button>
+    </div>
+    <div id="qrcode"></div>
+  </div>
+
+  <!-- قسم الاستقبال -->
+  <div class="box">
+    <div class="section-title">استقبال صوت من QR</div>
+    <div class="row">
+      <button onclick="startScan()">بدء المسح</button>
+      <button class="danger" onclick="stopScan()">إيقاف المسح</button>
+    </div>
+    <div id="reader"></div>
+    <audio id="receivedAudio" controls></audio>
+    <div id="scanStatus" class="status"></div>
+  </div>
+</div>
+
+<script>
+/* ========= 1) تسجيل الصوت ========= */
+
+let mediaRecorder = null;
+let recordedChunks = [];
+let recordedBlob = null;
+
+const recordBtn = document.getElementById("recordBtn");
+const recordStatus = document.getElementById("recordStatus");
+const localAudio = document.getElementById("localAudio");
+
+async function toggleRecording() {
+  if (!mediaRecorder || mediaRecorder.state === "inactive") {
+    // بدء التسجيل
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordedChunks = [];
+      mediaRecorder = new MediaRecorder(stream, {
+        mimeType: "audio/webm" // بسيط ومتاح في المتصفحات الحديثة
+      });
+
+      mediaRecorder.ondataavailable = e => {
+        if (e.data.size > 0) recordedChunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = () => {
+        recordedBlob = new Blob(recordedChunks, { type: "audio/webm" });
+        const url = URL.createObjectURL(recordedBlob);
+        localAudio.src = url;
+        recordStatus.textContent = "تم التسجيل — جاهز للتحويل إلى QR";
+      };
+
+      mediaRecorder.start();
+      recordBtn.textContent = "إيقاف التسجيل";
+      recordStatus.textContent = "جاري التسجيل...";
+    } catch (err) {
+      console.error(err);
+      recordStatus.textContent = "فشل في الوصول للميكروفون";
+    }
+  } else if (mediaRecorder.state === "recording") {
+    // إيقاف التسجيل
+    mediaRecorder.stop();
+    recordBtn.textContent = "بدء التسجيل";
+    recordStatus.textContent = "إيقاف التسجيل...";
+  }
+}
+
+/* ========= 2) تحويل Blob صوت إلى نص مضغوط ========= */
+
+// Blob → Uint8Array
+function blobToUint8Array(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      resolve(new Uint8Array(e.target.result));
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(blob);
+  });
+}
+
+// Uint8Array → Base64
+function uint8ToBase64(u8) {
+  let binary = "";
+  for (let i = 0; i < u8.length; i++) {
+    binary += String.fromCharCode(u8[i]);
+  }
+  return btoa(binary);
+}
+
+// Base64 → Uint8Array
+function base64ToUint8(base64) {
+  const binary = atob(base64);
+  const len = binary.length;
+  const u8 = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    u8[i] = binary.charCodeAt(i);
+  }
+  return u8;
+}
+
+/* ========= 3) توليد QR من الصوت ========= */
+
+function generateAudioQR() {
+  if (!recordedBlob) {
+    recordStatus.textContent = "لا يوجد تسجيل بعد.";
+    return;
+  }
+
+  blobToUint8Array(recordedBlob).then(u8 => {
+    const b64 = uint8ToBase64(u8);
+    const compressed = LZString.compressToEncodedURIComponent(b64);
+    const finalText = "ALM-AUDIO/1.0;" + compressed;
+
+    document.getElementById("qrcode").innerHTML = "";
+    new QRCode(document.getElementById("qrcode"), {
+      text: finalText,
+      width: 220,
+      height: 220,
+      correctLevel: QRCode.CorrectLevel.M
+    });
+
+    recordStatus.textContent = "تم توليد QR للصوت.";
+  }).catch(err => {
+    console.error(err);
+    recordStatus.textContent = "خطأ أثناء تحويل الصوت إلى QR.";
+  });
+}
+
+/* ========= 4) مسح QR واستعادة الصوت ========= */
+
+let html5QrInstance = null;
+const readerDiv = document.getElementById("reader");
+const receivedAudio = document.getElementById("receivedAudio");
+const scanStatus = document.getElementById("scanStatus");
+
+function startScan() {
+  if (html5QrInstance) return;
+
+  readerDiv.style.display = "block";
+  scanStatus.textContent = "جاري تشغيل الكاميرا...";
+
+  html5QrInstance = new Html5Qrcode("reader");
+  html5QrInstance.start(
+    { facingMode: "environment" },
+    { fps: 10, qrbox: 220 },
+    qrText => {
+      handleScannedText(qrText);
+      stopScan();
+    },
+    err => {
+      // يمكن تجاهل أخطاء القراءة المستمرة
+    }
+  ).then(() => {
+    scanStatus.textContent = "وجّه الكاميرا نحو QR الصوت.";
+  }).catch(err => {
+    console.error(err);
+    scanStatus.textContent = "فشل في تشغيل الكاميرا.";
+  });
+}
+
+function stopScan() {
+  if (!html5QrInstance) return;
+  html5QrInstance.stop().then(() => {
+    html5QrInstance.clear();
+    html5QrInstance = null;
+    readerDiv.style.display = "none";
+    scanStatus.textContent = "تم إيقاف المسح.";
+  });
+}
+
+function handleScannedText(qrText) {
+  if (!qrText.startsWith("ALM-AUDIO/1.0;")) {
+    scanStatus.textContent = "البيانات ليست من نوع ALM-AUDIO/1.0";
+    return;
+  }
+  const payload = qrText.slice("ALM-AUDIO/1.0;".length);
+  const b64 = LZString.decompressFromEncodedURIComponent(payload);
+  if (!b64) {
+    scanStatus.textContent = "فشل في فك الضغط.";
+    return;
+  }
+
+  const u8 = base64ToUint8(b64);
+  const blob = new Blob([u8], { type: "audio/webm" });
+  const url = URL.createObjectURL(blob);
+  receivedAudio.src = url;
+  scanStatus.textContent = "تم استعادة الصوت — يمكنك تشغيله الآن.";
+}
+</script>
+
+</body>
+</html>
