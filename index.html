@@ -81,9 +81,12 @@ input[type="file"] {
 }
 </style>
 
+<!-- مكتبات خارجية -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://unpkg.com/html5-qrcode"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.js"></script>
+
 </head>
 <body>
 
@@ -393,7 +396,7 @@ function stopScan() {
   });
 }
 
-/* فك QR من صورة */
+/* فك QR من صورة باستخدام jsQR */
 function decodeQRFromImage() {
   const file = document.getElementById("qrImageInput").files[0];
   if (!file) {
@@ -401,20 +404,29 @@ function decodeQRFromImage() {
     return;
   }
 
-  const html5Qr = new Html5Qrcode("reader");
-  document.getElementById("reader").style.display = "block";
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const img = new Image();
+    img.onload = function() {
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
 
-  html5Qr.scanFile(file, true)
-    .then(qrText => {
-      handleScannedText(qrText);
-      html5Qr.clear();
-      document.getElementById("reader").style.display = "none";
-    })
-    .catch(err => {
-      scanStatus.textContent = "فشل قراءة QR من الصورة.";
-      html5Qr.clear();
-      document.getElementById("reader").style.display = "none";
-    });
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const code = jsQR(imageData.data, canvas.width, canvas.height);
+
+      if (code) {
+        handleScannedText(code.data);
+        scanStatus.textContent = "تم قراءة QR من الصورة.";
+      } else {
+        scanStatus.textContent = "فشل قراءة QR من الصورة.";
+      }
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
 }
 
 /* معالجة النص الممسوح */
